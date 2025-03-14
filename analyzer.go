@@ -155,7 +155,8 @@ func (ctx *Context) GetFileAtNodePos(node ast.Node) *token.File {
 }
 
 // NewIssue creates a new issue
-func (ctx *Context) NewIssue(node ast.Node, ruleID, desc string,
+func (ctx *Context) NewIssue(
+	node ast.Node, ruleID, desc string,
 	severity, confidence issue.Score,
 ) *issue.Issue {
 	return issue.New(ctx.GetFileAtNodePos(node), node, ruleID, desc, severity, confidence)
@@ -190,7 +191,14 @@ type Analyzer struct {
 }
 
 // NewAnalyzer builds a new analyzer.
-func NewAnalyzer(conf Config, tests bool, excludeGenerated bool, trackSuppressions bool, concurrency int, logger *log.Logger) *Analyzer {
+func NewAnalyzer(
+	conf Config,
+	tests bool,
+	excludeGenerated bool,
+	trackSuppressions bool,
+	concurrency int,
+	logger *log.Logger,
+) *Analyzer {
 	ignoreNoSec := false
 	if enabled, err := conf.IsGlobalEnabled(Nosec); err == nil {
 		ignoreNoSec = enabled
@@ -232,7 +240,10 @@ func (gosec *Analyzer) Config() Config {
 
 // LoadRules instantiates all the rules to be used when analyzing source
 // packages
-func (gosec *Analyzer) LoadRules(ruleDefinitions map[string]RuleBuilder, ruleSuppressed map[string]bool) {
+func (gosec *Analyzer) LoadRules(
+	ruleDefinitions map[string]RuleBuilder,
+	ruleSuppressed map[string]bool,
+) {
 	for id, def := range ruleDefinitions {
 		r, nodes := def(id, gosec.config)
 		gosec.ruleset.Register(r, ruleSuppressed[id], nodes...)
@@ -241,7 +252,10 @@ func (gosec *Analyzer) LoadRules(ruleDefinitions map[string]RuleBuilder, ruleSup
 
 // LoadAnalyzers instantiates all the analyzers to be used when analyzing source
 // packages
-func (gosec *Analyzer) LoadAnalyzers(analyzerDefinitions map[string]analyzers.AnalyzerDefinition, analyzerSuppressed map[string]bool) {
+func (gosec *Analyzer) LoadAnalyzers(
+	analyzerDefinitions map[string]analyzers.AnalyzerDefinition,
+	analyzerSuppressed map[string]bool,
+) {
 	for id, def := range analyzerDefinitions {
 		r := def.Create(def.ID, def.Description)
 		gosec.analyzerSet.Register(r, analyzerSuppressed[id])
@@ -332,19 +346,45 @@ func (gosec *Analyzer) load(pkgPath string, conf *packages.Config) ([]*packages.
 		return []*packages.Package{}, nil
 	}
 
-	gosec.logger.Println("Import directory:", abspath)
+	gosec.logger.Println("Import directory/files:", abspath)
 	// step 1/3 create build context.
 	buildD := build.Default
 	// step 2/3: add build tags to get env dependent files into basePackage.
 	gosec.mu.Lock()
 	buildD.BuildTags = conf.BuildFlags
 	gosec.mu.Unlock()
-	basePackage, err := buildD.ImportDir(pkgPath, build.ImportComment)
-	if err != nil {
-		return []*packages.Package{}, fmt.Errorf("importing dir %q: %w", pkgPath, err)
-	}
 
 	var packageFiles []string
+	if strings.HasSuffix(pkgPath, ".go") {
+		isTestFile := strings.HasSuffix(pkgPath, "_test.go")
+		if !isTestFile || gosec.tests {
+			packageFiles = []string{pkgPath}
+		}
+	} else {
+		packageFiles, err = gosec.loadPackageFiles(pkgPath)
+		if err != nil {
+			return []*packages.Package{}, err
+		}
+	}
+
+	// step 3/3 remove build tags from conf to proceed build correctly.
+	gosec.mu.Lock()
+	conf.BuildFlags = nil
+	defer gosec.mu.Unlock()
+	pkgs, err := packages.Load(conf, packageFiles...)
+	if err != nil {
+		return []*packages.Package{}, fmt.Errorf("loading files from package %q: %w", pkgPath, err)
+	}
+	return pkgs, nil
+}
+
+func (gosec *Analyzer) loadPackageFiles(pkgPath string) ([]string, error) {
+	var packageFiles []string
+	basePackage, err := build.ImportDir(pkgPath, build.ImportComment)
+	if err != nil {
+		return packageFiles, fmt.Errorf("importing dir %q: %w", pkgPath, err)
+	}
+
 	for _, filename := range basePackage.GoFiles {
 		packageFiles = append(packageFiles, path.Join(pkgPath, filename))
 	}
@@ -360,16 +400,7 @@ func (gosec *Analyzer) load(pkgPath string, conf *packages.Config) ([]*packages.
 			packageFiles = append(packageFiles, path.Join(pkgPath, filename))
 		}
 	}
-
-	// step 3/3 remove build tags from conf to proceed build correctly.
-	gosec.mu.Lock()
-	conf.BuildFlags = nil
-	defer gosec.mu.Unlock()
-	pkgs, err := packages.Load(conf, packageFiles...)
-	if err != nil {
-		return []*packages.Package{}, fmt.Errorf("loading files from package %q: %w", pkgPath, err)
-	}
-	return pkgs, nil
+	return packageFiles, nil
 }
 
 // CheckRules runs analysis on the given package.
@@ -413,7 +444,11 @@ func (gosec *Analyzer) CheckRules(pkg *packages.Package) {
 func (gosec *Analyzer) CheckAnalyzers(pkg *packages.Package) {
 	ssaResult, err := gosec.buildSSA(pkg)
 	if err != nil || ssaResult == nil {
-		gosec.logger.Printf("Error building the SSA representation of the package %q: %s", pkg.Name, err)
+		gosec.logger.Printf(
+			"Error building the SSA representation of the package %q: %s",
+			pkg.Name,
+			err,
+		)
 		return
 	}
 
@@ -625,7 +660,10 @@ func (gosec *Analyzer) ignore(n ast.Node) map[string]issue.SuppressionInfo {
 
 // findNoSecDirective checks if the comment group contains `#nosec` or `//gosec:disable` directive.
 // If found, it returns true and the directive's arguments.
-func findNoSecDirective(group *ast.CommentGroup, noSecDefaultTag, noSecAlternativeTag string) (bool, string) {
+func findNoSecDirective(group *ast.CommentGroup, noSecDefaultTag, noSecAlternativeTag string) (
+	bool,
+	string,
+) {
 	// Check if the comment grounp has a nosec comment.
 	for _, tag := range []string{noSecDefaultTag, noSecAlternativeTag} {
 		if found, args := findNoSecTag(group, tag); found {
@@ -669,7 +707,13 @@ func (gosec *Analyzer) Visit(n ast.Node) ast.Visitor {
 		if err != nil {
 			file, line := GetLocation(n, gosec.context)
 			file = path.Base(file)
-			gosec.logger.Printf("Rule error: %v => %s (%s:%d)\n", reflect.TypeOf(rule), err, file, line)
+			gosec.logger.Printf(
+				"Rule error: %v => %s (%s:%d)\n",
+				reflect.TypeOf(rule),
+				err,
+				file,
+				line,
+			)
 		}
 		gosec.updateIssues(issue)
 	}
@@ -697,7 +741,11 @@ func (gosec *Analyzer) updateIgnoredRulesForNode(n ast.Node) {
 	}
 }
 
-func (gosec *Analyzer) getSuppressionsAtLineInFile(file string, line string, id string) ([]issue.SuppressionInfo, bool) {
+func (gosec *Analyzer) getSuppressionsAtLineInFile(
+	file string,
+	line string,
+	id string,
+) ([]issue.SuppressionInfo, bool) {
 	ignoredRules := gosec.context.Ignores.get(file, line)
 
 	// Check if the rule was specifically suppressed at this location.
@@ -709,17 +757,23 @@ func (gosec *Analyzer) getSuppressionsAtLineInFile(file string, line string, id 
 	// Track external suppressions of this rule.
 	if gosec.ruleset.IsRuleSuppressed(id) || gosec.analyzerSet.IsSuppressed(id) {
 		ignored = true
-		suppressions = append(suppressions, issue.SuppressionInfo{
-			Kind:          "external",
-			Justification: externalSuppressionJustification,
-		})
+		suppressions = append(
+			suppressions, issue.SuppressionInfo{
+				Kind:          "external",
+				Justification: externalSuppressionJustification,
+			},
+		)
 	}
 	return suppressions, ignored
 }
 
 func (gosec *Analyzer) updateIssues(issue *issue.Issue) {
 	if issue != nil {
-		suppressions, ignored := gosec.getSuppressionsAtLineInFile(issue.File, issue.Line, issue.RuleID)
+		suppressions, ignored := gosec.getSuppressionsAtLineInFile(
+			issue.File,
+			issue.Line,
+			issue.RuleID,
+		)
 		if gosec.showIgnored {
 			issue.NoSec = ignored
 		}
