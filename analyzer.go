@@ -346,6 +346,12 @@ func (gosec *Analyzer) load(pkgPath string, conf *packages.Config) ([]*packages.
 		return []*packages.Package{}, nil
 	}
 
+	isDir, err := IsDir(abspath)
+	if err != nil {
+		gosec.logger.Printf("Skipping: %s. Path doesn't exist.", abspath)
+		return []*packages.Package{}, nil
+	}
+
 	gosec.logger.Println("Import directory/files:", abspath)
 	// step 1/3 create build context.
 	buildD := build.Default
@@ -355,15 +361,17 @@ func (gosec *Analyzer) load(pkgPath string, conf *packages.Config) ([]*packages.
 	gosec.mu.Unlock()
 
 	var packageFiles []string
-	if strings.HasSuffix(pkgPath, ".go") {
-		isTestFile := strings.HasSuffix(pkgPath, "_test.go")
-		if !isTestFile || gosec.tests {
-			packageFiles = []string{pkgPath}
-		}
-	} else {
+	if isDir {
 		packageFiles, err = gosec.loadPackageFiles(pkgPath)
 		if err != nil {
 			return []*packages.Package{}, err
+		}
+	} else {
+		if strings.HasSuffix(pkgPath, ".go") {
+			isTestFile := strings.HasSuffix(pkgPath, "_test.go")
+			if !isTestFile || gosec.tests {
+				packageFiles = []string{pkgPath}
+			}
 		}
 	}
 

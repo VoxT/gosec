@@ -385,6 +385,15 @@ func GetPkgAbsPath(pkgPath string) (string, error) {
 	return absPath, nil
 }
 
+// IsDir returns if the given path is a directory
+func IsDir(absPath string) (bool, error) {
+	st, err := os.Stat(absPath)
+	if err != nil {
+		return false, errors.New("no project absolute path found")
+	}
+	return st.IsDir(), nil
+}
+
 // ConcatString recursively concatenates strings from a binary expression
 func ConcatString(n *ast.BinaryExpr) (string, bool) {
 	var s string
@@ -448,16 +457,18 @@ func PackagePaths(root string, excludes []*regexp.Regexp) ([]string, error) {
 		return []string{root}, nil
 	}
 	paths := map[string]bool{}
-	err := filepath.Walk(root, func(path string, f os.FileInfo, err error) error {
-		if filepath.Ext(path) == ".go" {
-			path = filepath.Dir(path)
-			if isExcluded(filepath.ToSlash(path), excludes) {
-				return nil
+	err := filepath.Walk(
+		root, func(path string, f os.FileInfo, err error) error {
+			if filepath.Ext(path) == ".go" {
+				path = filepath.Dir(path)
+				if isExcluded(filepath.ToSlash(path), excludes) {
+					return nil
+				}
+				paths[path] = true
 			}
-			paths[path] = true
-		}
-		return nil
-	})
+			return nil
+		},
+	)
 	if err != nil {
 		return []string{}, err
 	}
@@ -486,7 +497,10 @@ func isExcluded(str string, excludes []*regexp.Regexp) bool {
 func ExcludedDirsRegExp(excludedDirs []string) []*regexp.Regexp {
 	var exps []*regexp.Regexp
 	for _, excludedDir := range excludedDirs {
-		str := fmt.Sprintf(`([\\/])?%s([\\/])?`, strings.ReplaceAll(filepath.ToSlash(excludedDir), "/", `\/`))
+		str := fmt.Sprintf(
+			`([\\/])?%s([\\/])?`,
+			strings.ReplaceAll(filepath.ToSlash(excludedDir), "/", `\/`),
+		)
 		r := regexp.MustCompile(str)
 		exps = append(exps, r)
 	}
